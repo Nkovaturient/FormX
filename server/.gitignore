@@ -1,0 +1,4 @@
+node_modules/
+.env
+utils/seedDatabase.js
+logs/

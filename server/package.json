@@ -1,0 +1,37 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": " node index.js",
+    "start": "nodemon index.js",
+    "seed": "node utils/seedDatabase.js"
+  },
+  "keywords": [],
+  "author": "Neha Kumari",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.1",
+    "express-validator": "^7.2.1",
+    "groq-sdk": "^0.27.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.17.0",
+    "mongoose": "^8.16.3",
+    "multer": "^2.0.1",
+    "nodemon": "^3.1.10",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "redis": "^5.6.0",
+    "sharp": "^0.34.3",
+    "tesseract.js": "^6.0.1",
+    "uuid": "^11.1.0",
+    "winston": "^3.17.0"
+  }
+}
