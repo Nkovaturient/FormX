@@ -22,6 +22,7 @@ class FormProcessingService {
     this.verifier = new DataVerifierAgent();
     this.filler = new FormFillerAgent();
     this.securityService = new SecurityService();
+    this.originalFormsDir = path.join(__dirname, '../uploads/original-forms');
   }
 
   async processFormComplete(file, userId, options = {}) {
@@ -33,11 +34,22 @@ class FormProcessingService {
       // Check user quota
       // await this.checkUserQuota(userId);
 
+      // Validate and persist uploaded file if coming from memory storage
+      await this.ensureDirectory(this.originalFormsDir);
+      await this.securityService.validateFile(file);
+      const storedFilePath = await this.saveUploadedFile(file);
+
+      // Normalize options possibly coming as string from multipart
+      let normalizedOptions = options;
+      if (typeof normalizedOptions === 'string') {
+        try { normalizedOptions = JSON.parse(normalizedOptions); } catch { normalizedOptions = {}; }
+      }
+
       // Create processing record
-      const processingRecord = await this.createProcessingRecord(file, userId, options);
+      const processingRecord = await this.createProcessingRecord({ ...file, path: storedFilePath }, userId, normalizedOptions);
 
       // Step 1: Form Analysis
-      const analysisResult = await this.performFormAnalysis(file, processingRecord);
+      const analysisResult = await this.performFormAnalysis({ ...file, path: storedFilePath }, processingRecord);
       await processingRecord.updateStep('analysis', 'completed', analysisResult);
 
       // Step 2: Data Collection Requirements
@@ -260,8 +272,8 @@ class FormProcessingService {
       console.log('Generating final output');
 
       const output = {
-        downloadUrl: `/api/forms/download/${path.basename(fillingResult.filledFormPath)}`,
-        previewUrl: `/api/forms/preview/${path.basename(fillingResult.filledFormPath)}`,
+        downloadUrl: `/api/form-processing/download/${path.basename(fillingResult.filledFormPath)}`,
+        previewUrl: `/api/form-processing/preview/${path.basename(fillingResult.filledFormPath)}`,
         formats: fillingResult.outputFormats,
         generatedAt: new Date().toISOString(),
         qualityScore: fillingResult.qualityScore,
@@ -422,7 +434,7 @@ class FormProcessingService {
           mimeType: file.mimetype,
           size: file.size
         },
-        preferences: options.preferences || {}
+        preferences: (options && options.preferences) || {}
       });
 
       await processingRecord.save();
@@ -801,6 +813,24 @@ class FormProcessingService {
     
     console.warn(`Could not parse date string: ${dateString}`);
     return null;
+  }
+
+  async ensureDirectory(dirPath) {
+    try {
+      await fs.access(dirPath);
+    } catch {
+      await fs.mkdir(dirPath, { recursive: true });
+    }
+  }
+
+  async saveUploadedFile(file) {
+    // If file already has a path (disk storage), return it
+    if (file.path) return file.path;
+
+    const sanitizedName = this.securityService.sanitizeFileName(file.originalname || 'uploaded_form');
+    const storedFilePath = path.join(this.originalFormsDir, `${Date.now()}_${sanitizedName}`);
+    await fs.writeFile(storedFilePath, file.buffer);
+    return storedFilePath;
   }
 }
 
