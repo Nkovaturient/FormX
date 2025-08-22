@@ -75,7 +75,6 @@ const modelConfigs = {
   }
 };
 
-
 async function makeGroqCall(config, prompt, systemPrompt = null) {
   if (!groqClient) {
     throw new Error('Groq client not initialized. Check GROQ_API_KEY env variable.');
@@ -110,9 +109,39 @@ async function makeGroqCall(config, prompt, systemPrompt = null) {
   }
 }
 
+async function makeGroqCallWithRetry(config, prompt, systemPrompt = null, options = {}) {
+  const maxRetries = options.maxRetries ?? 3;
+  const baseDelayMs = options.baseDelayMs ?? 800;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await makeGroqCall(config, prompt, systemPrompt);
+    } catch (err) {
+      attempt += 1;
+      const transient = typeof err.message === 'string' && (
+        err.message.includes('timeout') ||
+        err.message.includes('rate limit') ||
+        err.message.includes('network') ||
+        err.message.includes('ECONNRESET') ||
+        err.message.includes('502') ||
+        err.message.includes('503') ||
+        err.message.includes('504')
+      );
+      if (!transient || attempt > maxRetries) {
+        throw err;
+      }
+      const jitter = Math.floor(Math.random() * 250);
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) + jitter;
+      console.warn(`Groq retry ${attempt}/${maxRetries} after ${delay}ms due to: ${err.message}`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 module.exports = {
   groqConfig,
   groqClient,
   modelConfigs,
-  makeGroqCall
+  makeGroqCall,
+  makeGroqCallWithRetry
 }; 

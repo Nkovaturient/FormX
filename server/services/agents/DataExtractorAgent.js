@@ -1,4 +1,4 @@
-const { groqClient, modelConfigs, makeGroqCall } = require('../../config/groq');
+const { groqClient, modelConfigs, makeGroqCallWithRetry } = require('../../config/groq');
 
 class DataExtractorAgent {
   constructor() {
@@ -98,7 +98,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedFields(response, 'text');
     } catch (error) {
       console.error('Text field extraction failed:', error);
@@ -142,7 +142,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedFields(response, 'checkbox');
     } catch (error) {
       console.error('Checkbox extraction failed:', error);
@@ -187,7 +187,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedFields(response, 'radio');
     } catch (error) {
       console.error('Radio button extraction failed:', error);
@@ -231,7 +231,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedFields(response, 'signature');
     } catch (error) {
       console.error('Signature extraction failed:', error);
@@ -276,7 +276,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedFields(response, 'table');
     } catch (error) {
       console.error('Table extraction failed:', error);
@@ -321,7 +321,7 @@ class DataExtractorAgent {
     `;
 
     try {
-      const response = await makeGroqCall(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
+      const response = await makeGroqCallWithRetry(modelConfigs.dataExtraction, prompt, modelConfigs.dataExtraction.systemPrompt);
       return this.parseExtractedSections(response);
     } catch (error) {
       console.error('Section extraction failed:', error);
