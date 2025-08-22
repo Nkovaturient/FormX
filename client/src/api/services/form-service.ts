@@ -241,11 +241,15 @@ export class FormService {
     }
   }
 
-  async downloadProcessedForm(filename: string): Promise<Blob> {
+  async downloadProcessedForm(filenameOrPath: string): Promise<Blob> {
     try {
       const authHeaders = this.getAuthHeaders();
-      
-      const response = await fetch(`${apiClient.baseURL}/api/form-processing/download/${filename}`, {
+
+      // Accept either a path like /api/form-processing/download/xyz.pdf or just the filename xyz.pdf
+      const isFullPath = filenameOrPath.startsWith('/');
+      const pathOrFilename = isFullPath ? filenameOrPath : `/api/form-processing/download/${filenameOrPath}`;
+
+      const response = await fetch(`${apiClient.baseURL}${pathOrFilename}`, {
         method: 'GET',
         headers: authHeaders,
       });

@@ -6,7 +6,8 @@ const { SecurityService } = require('../services/SecurityService');
 const { CacheService, CacheServices } = require('../services/CacheService');
 const formProcessingModel = require('../models/formProcessingModel');
 const ApiError = require('../utils/ApiError');
-const fs = require('fs').promises;
+const fsPromises = require('fs').promises;
+const fs = require('fs');
 const path = require('path');
 
 const router = express.Router();
@@ -37,6 +38,15 @@ const upload = multer({
 });
 
 const formProcessingService = new FormProcessingService();
+const securityService = new SecurityService();
+
+async function ensureDir(dirPath) {
+  try {
+    await fsPromises.access(dirPath);
+  } catch {
+    await fsPromises.mkdir(dirPath, { recursive: true });
+  }
+}
 
 /**
  * POST /api/form-processing/start
@@ -96,33 +106,20 @@ router.post('/:processingId/submit-data',
   upload.array('documents', 10),
   [
     param('processingId').isMongoId().withMessage('Invalid processing ID'),
-    body('personalInfo.firstName').isString().trim().isLength({ min: 1 }),
-    body('personalInfo.lastName').isString().trim().isLength({ min: 1 }),
-    body('personalInfo.dateOfBirth').isISO8601().toDate(),
-    body('contactInfo.email').isEmail().normalizeEmail(),
-    body('contactInfo.phone').optional().isString(),
-    body('contactInfo.address.street').optional().isString(),
-    body('contactInfo.address.city').optional().isString(),
-    body('contactInfo.address.state').optional().isString(),
-    body('contactInfo.address.zipCode').optional().isString(),
-    body('contactInfo.address.country').optional().isString(),
-    body('professionalInfo.occupation').optional().isString(),
-    body('professionalInfo.employer').optional().isString(),
+    body('personalInfo.firstName').optional(),
+    body('personalInfo.lastName').optional(),
+    body('personalInfo.dateOfBirth').optional(),
+    body('contactInfo.email').optional(),
   ],
   async (req, res, next) => {
     try {
-      // const errors = validationResult(req);
-      // if (!errors.isEmpty()) {
-      //   throw new ApiError(400, 'Validation failed', errors.array());
-      // }
-
       const userId = req.user.id;
       const processingId = req.params.processingId;
-      const documents = req.files || [];
+      const uploadedDocs = req.files || [];
 
       console.log('Received form data:', {
-        body: req.body,
-        files: documents.map(doc => ({ name: doc.originalname, size: doc.size }))
+        bodyKeys: Object.keys(req.body),
+        files: uploadedDocs.map((doc, i) => ({ idx: i, name: doc.originalname, size: doc.size }))
       });
 
       // Parse the form data properly
@@ -130,11 +127,7 @@ router.post('/:processingId/submit-data',
         personalInfo: {},
         contactInfo: {},
         professionalInfo: {},
-        documents: documents.map(doc => ({
-          type: req.body[`documentTypes[${doc.fieldname}]`] || 'other',
-          name: doc.originalname || 'Document',
-          file: doc
-        }))
+        documents: []
       };
 
       // Parse personal info
@@ -143,7 +136,6 @@ router.post('/:processingId/submit-data',
           userData.personalInfo = JSON.parse(req.body.personalInfo);
         } catch (e) {
           console.error('Failed to parse personalInfo:', e);
-          userData.personalInfo = {};
         }
       }
 
@@ -153,7 +145,6 @@ router.post('/:processingId/submit-data',
           userData.contactInfo = JSON.parse(req.body.contactInfo);
         } catch (e) {
           console.error('Failed to parse contactInfo:', e);
-          userData.contactInfo = {};
         }
       }
 
@@ -163,7 +154,6 @@ router.post('/:processingId/submit-data',
           userData.professionalInfo = JSON.parse(req.body.professionalInfo);
         } catch (e) {
           console.error('Failed to parse professionalInfo:', e);
-          userData.professionalInfo = {};
         }
       }
 
@@ -179,13 +169,35 @@ router.post('/:processingId/submit-data',
           }
         }
       }
-      
       if (Object.keys(dynamicFields).length > 0) {
         userData.dynamicFields = dynamicFields;
-        console.log('Parsed dynamic fields:', dynamicFields);
       }
 
-      console.log('Processed userData:', userData);
+      // Persist uploaded documents to disk and map types by index
+      const userDocsDir = path.join(__dirname, '../uploads/user-documents', String(userId));
+      await ensureDir(userDocsDir);
+
+      const persistedDocs = [];
+      for (let i = 0; i < uploadedDocs.length; i++) {
+        const doc = uploadedDocs[i];
+        const safeName = securityService.sanitizeFileName(doc.originalname || `document_${i}`);
+        const storedPath = path.join(userDocsDir, `${Date.now()}_${i}_${safeName}`);
+        await fsPromises.writeFile(storedPath, doc.buffer);
+        persistedDocs.push({
+          type: req.body[`documentTypes[${i}]`] || 'other',
+          name: doc.originalname || 'Document',
+          fileName: safeName,
+          filePath: storedPath,
+          mimeType: doc.mimetype,
+          size: doc.size,
+          uploadedAt: new Date(),
+          verified: false
+        });
+      }
+
+      userData.documents = persistedDocs;
+
+      console.log('Processed userData keys:', Object.keys(userData));
 
       console.info(`User data submitted for processing ${processingId} by user ${userId}`);
 
@@ -193,7 +205,7 @@ router.post('/:processingId/submit-data',
       const result = await formProcessingService.submitUserData(
         processingId,
         userData,
-        documents,
+        persistedDocs,
         userId
       );
 
@@ -354,7 +366,7 @@ router.get('/download/:filename',
 
       // Check if file exists
       try {
-        await fs.access(filePath);
+        await fsPromises.access(filePath);
       } catch (error) {
         throw new ApiError(404, 'File not found');
       }
@@ -397,7 +409,7 @@ router.get('/preview/:filename',
 
       // Check if file exists
       try {
-        await fs.access(filePath);
+        await fsPromises.access(filePath);
       } catch (error) {
         throw new ApiError(404, 'File not found');
       }
