@@ -11,3 +11,4 @@ export type {
   GeneratedForm,
 } from './types/form-analysis.js';
 export { formService } from './services/form-service.js';
+export { userDataService, type VaultUserData } from './services/user-data.js';

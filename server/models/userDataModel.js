@@ -83,6 +83,9 @@ const userDataSchema = new mongoose.Schema({
   encryptionKey: String,
   lastUpdated: { type: Date, default: Date.now },
   
+  // Sensitive fields encrypted at rest
+  sensitive: { type: mongoose.Schema.Types.Mixed, default: {} },
+  
   // Privacy settings
   dataSharing: {
     allowFormFilling: { type: Boolean, default: true },

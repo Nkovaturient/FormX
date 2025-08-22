@@ -48,6 +48,8 @@ async function ensureDir(dirPath) {
   }
 }
 
+const USER_DOCS_ROOT = path.join(__dirname, '../uploads/user-documents');
+
 /**
  * POST /api/form-processing/start
  * Start the complete form processing workflow
@@ -102,8 +104,31 @@ router.post('/start',
  * POST /api/form-processing/:processingId/submit-data
  * Submit user data and documents for form filling
  */
+const documentsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024, // 8MB per document
+    files: 10,
+    fieldNameSize: 100,
+    fields: 200
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedDocs = new Set([
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/tiff'
+    ]);
+    if (!allowedDocs.has(file.mimetype)) {
+      cb(new ApiError(400, 'Invalid document type. Only PDF/JPEG/PNG/TIFF allowed'));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
 router.post('/:processingId/submit-data',
-  upload.array('documents', 10),
+  documentsUpload.array('documents', 10),
   [
     param('processingId').isMongoId().withMessage('Invalid processing ID'),
     body('personalInfo.firstName').optional(),
@@ -117,9 +142,15 @@ router.post('/:processingId/submit-data',
       const processingId = req.params.processingId;
       const uploadedDocs = req.files || [];
 
+      // Enforce total documents size limit ~30MB
+      const totalSize = uploadedDocs.reduce((s, f) => s + (f?.size || 0), 0);
+      if (totalSize > 30 * 1024 * 1024) {
+        throw new ApiError(400, 'Total documents size exceeds 30MB');
+      }
+
       console.log('Received form data:', {
         bodyKeys: Object.keys(req.body),
-        files: uploadedDocs.map((doc, i) => ({ idx: i, name: doc.originalname, size: doc.size }))
+        files: uploadedDocs.map((doc, i) => ({ idx: i, name: doc.originalname, size: doc.size, type: doc.mimetype }))
       });
 
       // Parse the form data properly
@@ -174,7 +205,7 @@ router.post('/:processingId/submit-data',
       }
 
       // Persist uploaded documents to disk and map types by index
-      const userDocsDir = path.join(__dirname, '../uploads/user-documents', String(userId));
+      const userDocsDir = path.join(USER_DOCS_ROOT, String(userId));
       await ensureDir(userDocsDir);
 
       const persistedDocs = [];

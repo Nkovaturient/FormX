@@ -14,7 +14,7 @@ import {
   ChevronRight,
   ChevronLeft
 } from 'lucide-react';
-import { formService, type FormProcessingResult, type UserData } from '../api/index.js';
+import { formService, type FormProcessingResult, type UserData, userDataService } from '../api/index.js';
 import { FormValidator } from '../utils/formValidation.js';
 
 interface FormField {
@@ -87,6 +87,7 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
   const [validationWarnings, setValidationWarnings] = useState<Record<string, string[]>>({});
   const [fieldTouched, setFieldTouched] = useState<Record<string, boolean>>({});
+  const [saveForFuture, setSaveForFuture] = useState<boolean>(true);
 
   const handleFileUpload = useCallback(async (file: File) => {
     setSelectedFile(file);
@@ -114,6 +115,21 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
           initialDynamicFields[field.field] = '';
         });
         setDynamicFields(initialDynamicFields);
+
+        // Prefill from user data vault
+        try {
+          const vault = await userDataService.get();
+          if (vault) {
+            setUserData(prev => ({
+              ...prev,
+              personalInfo: { ...prev.personalInfo, ...(vault.personalInfo || {}) },
+              contactInfo: { ...prev.contactInfo, ...(vault.contactInfo || {}) },
+              professionalInfo: { ...prev.professionalInfo, ...(vault.professionalInfo || {}) }
+            }));
+          }
+        } catch (e) {
+          // non-blocking
+        }
       } else {
         setCurrentStep('processing');
         await pollProcessingStatus(result.processingId);
@@ -122,7 +138,7 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
       setError(err instanceof Error ? err.message : 'Upload failed');
       setIsProcessing(false);
     }
-  }, []);
+  }, [pollProcessingStatus]);
 
   const pollProcessingStatus = useCallback(async (processingId: string) => {
     const maxAttempts = 30; // 5 minutes with 10-second intervals
@@ -131,7 +147,8 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
     const poll = async () => {
       try {
         const status = await formService.getProcessingStatus(processingId);
-        setProgress(30 + (attempts / maxAttempts) * 60);
+        const serverPct = (status as any)?.progress?.percentage;
+        setProgress(typeof serverPct === 'number' ? serverPct : 30 + (attempts / maxAttempts) * 60);
 
         if (status.status === 'completed') {
           setProcessingResult(status);
@@ -275,6 +292,34 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
     return validationErrors[fieldName]?.[0] || '';
   }, [validationErrors]);
 
+  // Document handlers
+  const handleDocumentsAdded = useCallback((files: FileList) => {
+    if (!files || files.length === 0) return;
+    setUserData(prev => ({
+      ...prev,
+      documents: [
+        ...(prev.documents || []),
+        ...Array.from(files).map((f) => ({ type: 'other', name: f.name, file: f }))
+      ]
+    }));
+  }, []);
+
+  const handleDocumentTypeChange = useCallback((index: number, newType: string) => {
+    setUserData(prev => {
+      const docs = [...(prev.documents || [])];
+      if (docs[index]) docs[index] = { ...docs[index], type: newType } as any;
+      return { ...prev, documents: docs } as UserData;
+    });
+  }, []);
+
+  const handleRemoveDocument = useCallback((index: number) => {
+    setUserData(prev => {
+      const docs = [...(prev.documents || [])];
+      docs.splice(index, 1);
+      return { ...prev, documents: docs } as UserData;
+    });
+  }, []);
+
   const handleUserDataSubmit = useCallback(async () => {
     if (!processingResult?.processingId) {
       setError('No processing session found');
@@ -292,7 +337,7 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
 
     formRequirements?.requiredInfo.forEach((field: FormField) => {
       const value = dynamicFields[field.field];
-      if (field.required && (!value || value.trim() === '')) {
+      if (field.required && (!value || (typeof value === 'string' && value.trim() === ''))) {
         dynamicErrors[field.field] = [`${field.description} is required`];
         hasDynamicErrors = true;
       } else if (value && !validateField(field.field, value)) {
@@ -300,9 +345,23 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
       }
     });
 
-    if (!validation.isValid || hasDynamicErrors) {
+    // Validate required documents coverage if present
+    let docErrors = false;
+    if (formRequirements?.requiredDocuments?.length) {
+      const providedTypes = new Set((userData.documents || []).map(d => d.type));
+      for (const req of formRequirements.requiredDocuments) {
+        if (req.required && !providedTypes.has((req.type || 'other'))) {
+          docErrors = true;
+        }
+      }
+      if (docErrors) {
+        setError('Please upload all required documents before submitting');
+      }
+    }
+
+    if (!validation.isValid || hasDynamicErrors || docErrors) {
       setValidationErrors({ ...validation.errors, ...dynamicErrors });
-      setError('Please correct the errors before submitting');
+      if (!docErrors && !error) setError('Please correct the errors before submitting');
       return;
     }
 
@@ -311,6 +370,19 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
     setProgress(40);
 
     try {
+      // Optionally save to vault (non-blocking)
+      if (saveForFuture) {
+        try {
+          await userDataService.put({
+            personalInfo: userData.personalInfo,
+            contactInfo: userData.contactInfo,
+            professionalInfo: userData.professionalInfo
+          });
+        } catch (e) {
+          // ignore vault errors
+        }
+      }
+
       // Ensure userData has proper structure with defaults
       const sanitizedUserData = {
         personalInfo: {
@@ -366,7 +438,7 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
       setError(err instanceof Error ? err.message : 'Data submission failed');
       setIsProcessing(false);
     }
-  }, [processingResult, userData, dynamicFields, formRequirements, validateField, pollProcessingStatus, onComplete]);
+  }, [processingResult, userData, dynamicFields, formRequirements, validateField, pollProcessingStatus, onComplete, saveForFuture]);
 
   const handleDownload = useCallback(async () => {
     if (!processingResult?.result?.downloadUrl) return;
@@ -664,6 +736,55 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
                 </div>
               ) : null}
 
+              {/* Documents Section */}
+              {formRequirements?.requiredDocuments?.length ? (
+                <div className="card p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Documents</h3>
+                  <p className="text-sm text-gray-600 mb-4">Upload required documents. Accepted: PDF, JPG, PNG, TIFF</p>
+                  <div className="mb-3">
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.jpg,.jpeg,.png,.tiff"
+                      onChange={(e) => e.target.files && handleDocumentsAdded(e.target.files)}
+                    />
+                  </div>
+                  <div className="mb-4 text-sm text-gray-700">
+                    <span className="font-medium">Required:</span>{' '}
+                    {formRequirements.requiredDocuments.filter(d => d.required).map((d, idx) => (
+                      <span key={idx} className="inline-block bg-yellow-50 border border-yellow-200 text-yellow-700 px-2 py-0.5 rounded mr-2 mt-1">
+                        {d.description || d.type}
+                      </span>
+                    ))}
+                  </div>
+                  {(userData.documents || []).length > 0 && (
+                    <div className="space-y-3">
+                      {(userData.documents || []).map((doc, idx) => (
+                        <div key={`${doc.name}-${idx}`} className="flex items-center justify-between border rounded p-2">
+                          <div className="flex-1">
+                            <div className="text-sm text-gray-800">{doc.name}</div>
+                          </div>
+                          <div className="mx-3">
+                            <select
+                              className="px-2 py-1 border rounded"
+                              value={(doc as any).type || 'other'}
+                              onChange={(e) => handleDocumentTypeChange(idx, e.target.value)}
+                            >
+                              {[...new Set([...(formRequirements.requiredDocuments || []).map(d => d.type), 'other'])]
+                                .filter(Boolean)
+                                .map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                            </select>
+                          </div>
+                          <button type="button" className="text-sm text-red-600" onClick={() => handleRemoveDocument(idx)}>Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
               {/* Standard Personal Information (fallback) */}
               {(!formRequirements || (!formRequirements.requiredInfo.length && !formRequirements.optionalInfo.length)) && (
                 <>
@@ -687,34 +808,40 @@ const FormProcessing: React.FC<FormProcessingProps> = ({ onComplete }) => {
                 </>
               )}
 
-              <div className="flex justify-between">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="btn-secondary"
-                  disabled={isProcessing}
-                >
-                  <ChevronLeft className="h-4 w-4 mr-1" />
-                  Back
-                </button>
-                <button
-                  type="submit"
-                  className="btn-primary"
-                  disabled={isProcessing || Object.keys(validationErrors).length > 0}
-                >
-                  {isProcessing ? (
-                    <>
-                      <Loader className="h-5 w-5 mr-2 animate-spin" />
-                      Processing...
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="h-5 w-5 mr-2" />
-                      Process Form
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </>
-                  )}
-                </button>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  <input id="save-vault" type="checkbox" className="mr-2" checked={saveForFuture} onChange={(e) => setSaveForFuture(e.target.checked)} />
+                  <label htmlFor="save-vault" className="text-sm text-gray-700">Save for future forms</label>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="btn-secondary"
+                    disabled={isProcessing}
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Back
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={isProcessing || Object.keys(validationErrors).length > 0}
+                  >
+                    {isProcessing ? (
+                      <>
+                        <Loader className="h-5 w-5 mr-2 animate-spin" />
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="h-5 w-5 mr-2" />
+                        Process Form
+                        <ChevronRight className="h-4 w-4 ml-1" />
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </form>

@@ -10,6 +10,7 @@ const formProcessingRoutes = require('./routes/formProcessing');
 const ocrRoutes = require('./routes/ocr');
 const authRoutes = require('./routes/auth');
 const analyticsRoutes = require('./routes/analytics');
+const userDataRoutes = require('./routes/userData');
 
 // middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -42,39 +43,32 @@ app.use(helmet({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// CORS configuration
-// app.use(cors({
-//   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-//   credentials: true,
-//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-//   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'multipart/form-data'],
-// }));
-
-app.use(cors({}));
+// CORS configuration (tightened)
+const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:5173';
+app.use(cors({
+  origin: allowedOrigin,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'user']
+}));
 
 // Rate limiting
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 100, // Limit each IP to 100 requests per windowMs
-//   message: {
-//     error: 'Too many requests from this IP, please try again later.',
-//     retryAfter: '15 minutes'
-//   },
-//   standardHeaders: true,
-//   legacyHeaders: false,
-// });
+const baseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/', baseLimiter);
 
-// app.use('/api/', limiter);
-
-// Stricter rate limiting for AI endpoints
-// const aiLimiter = rateLimit({
-//   windowMs: 60 * 1000, // 1 minute
-//   max: 10, // Limit each IP to 10 AI requests per minute
-//   message: {
-//     error: 'AI processing rate limit exceeded. Please wait before making another request.',
-//     retryAfter: '1 minute'
-//   },
-// });
+// Stricter rate limiting for form-processing endpoints
+const formProcessingLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/form-processing', formProcessingLimiter);
 
 // Request logging
 app.use(requestLogger);
@@ -95,6 +89,7 @@ app.use('/api/form', authMiddleware, formRoutes);
 app.use('/api/form-processing', authMiddleware, formProcessingRoutes);
 app.use('/api/ocr', authMiddleware, ocrRoutes);
 app.use('/api/analytics', authMiddleware, analyticsRoutes);
+app.use('/api/user-data', authMiddleware, userDataRoutes);
 
 
 
@@ -107,7 +102,7 @@ async function startServer() {
 
     app.listen(PORT, () => {
       console.log(`Server running on port http://localhost:${PORT}/health`);
-      console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
+      console.log(`Frontend URL: ${allowedOrigin}`);
     });
 
   } catch (error) {

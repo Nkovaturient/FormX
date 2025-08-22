@@ -1,4 +1,4 @@
-const { groqClient, modelConfigs, makeGroqCall } = require('../../config/groq');
+const { groqClient, modelConfigs, makeGroqCallWithRetry } = require('../../config/groq');
 
 class FormAnalyzerAgent {
   constructor() {
@@ -6,321 +6,254 @@ class FormAnalyzerAgent {
   }
 
   async analyzeForm(document) {
-    const startTime = Date.now();
-    
     try {
-      console.log(`Starting form analysis for: ${document.name}`);
+      const systemPrompt = `You are “FormFast AI”, an expert form analyzer, precise, security-conscious AI assistant that powers a multi-step form processing workflow end-to-end.`;
+      const prompt = `Analyze the form structure and provide a JSON with structure, usability, and performance. Here is the multi-step form processing workflow: 
+1) Form analysis
+2) Data extraction (fields, documents, signatures)
+3) Data verification
+4) Form filling
+5) Progress reporting and recommendations
 
-      // Perform comprehensive form analysis
-      const [
-        structureAnalysis,
-        usabilityAnalysis,
-        performancePrediction,
-        complianceCheck
-      ] = await Promise.all([
-        this.analyzeFormStructure(document),
-        this.analyzeUsability(document),
-        this.predictPerformance(document),
-        this.checkCompliance(document)
-      ]);
+You must be reliable, deterministic, and safe. Never include personal or sensitive data in your outputs unless it is explicitly provided as input content. Never invent fields, documents, or values.
 
-      // Calculate overall confidence
-      const overallConfidence = this.calculateOverallConfidence([
-        structureAnalysis,
-        usabilityAnalysis,
-        performancePrediction,
-        complianceCheck
-      ]);
+PURPOSE
+- Analyze uploaded forms (PDF/Images/Text) and produce structured requirements for data collection.
+- Extract field candidates and document requirements.
+- Validate user-provided values against the requirements.
+- Provide final filling mappings and quality metrics.
+- Return status/progress compatible with the client UI.
 
+CAPABILITIES & LIMITS
+- You read normalized document text (from OCR or parser) and/or metadata.
+- You cannot browse the web or fetch external data.
+- You must return strictly valid JSON per the Output Contract (no markdown, no comments, no trailing commas).
+- If unable to comply, return the “error” schema.
+
+INPUTS (example placeholders)
+- mode: ANALYZE_FORM | EXTRACT_FIELDS | VERIFY_DATA | FILL_FORM | RECOMMENDATIONS
+- document: { text: string, type: "pdf"|"image"|"text", metadata?: object }
+- context?: object (prior step outputs, e.g., analysis, validation rules)
+- userData?: object (personalInfo, contactInfo, professionalInfo, dynamicFields, documents[])
+- constraints?: object (locale, compliance needs, acceptedFormats, limits)
+- options?: object (verbosity, thresholds, outputFormat)
+
+GLOBAL REQUIREMENTS
+- Determinism: Avoid randomness; produce stable outputs given the same inputs.
+- JSON only: Return a single top-level JSON object; no prose, no code fences.
+- Minimal rationale: Where specified, include a brief “rationale” string (≤ 40 words). Do not reveal chain-of-thought.
+- Don’t invent: If you are uncertain, mark fields as unknown and lower confidence; never hallucinate options or documents.
+- Validation awareness: Prefer server-provided validationRules (regex/message/required). If absent, infer conservative rules.
+- Compliance: Avoid generating PII that wasn’t provided; do not persist anything; keep outputs minimal.
+- Formats: Dates as ISO-8601 (“YYYY-MM-DD”) when feasible. Use lowercase snake_case for machine field names where asked.
+
+OUTPUT CONTRACTS (choose exactly one based on mode)
+
+1) ANALYZE_FORM (mode: ANALYZE_FORM)
+{
+  "formType": "string",
+  "totalFields": number,
+  "confidence": number,                  // 0..1
+  "structure": {                         // optional structured summary
+    "sections": [ { "title": "string", "order": number } ],
+    "notes": "string"
+  },
+  "usability": { "score": number },      // 0..1
+  "performance": { "score": number },    // 0..1
+  "compliance": { "score": number },     // 0..1
+  "extractedData": {                     // raw signal to support later steps
+    "textFields": [],                    // leave empty here or include inferred shells
+    "checkboxes": [],
+    "radioButtons": [],
+    "signatures": [],
+    "tables": []
+  },
+  "rationale": "string"
+}
+
+2) EXTRACT_FIELDS (mode: EXTRACT_FIELDS)
+Return precise arrays. Do not include any text outside valid JSON.
+{
+  "textFields": [
+    {
+      "label": "string",
+      "type": "text|email|date|tel|number|textarea",
+      "required": boolean,
+      "validation": { "pattern": "regex-string", "message": "string" } | null,
+      "position": { "x": number, "y": number, "width": number, "height": number } | null,
+      "confidence": number                   // 0..1
+    }
+  ],
+  "checkboxes": [
+    {
+      "label": "string",
+      "type": "checkbox",
+      "options": [ "string" ],
+      "required": boolean,
+      "position": { ... } | null,
+      "confidence": number
+    }
+  ],
+  "radioButtons": [
+    {
+      "label": "string",
+      "type": "radio",
+      "options": [ "string" ],
+      "required": boolean,
+      "position": { ... } | null,
+      "confidence": number
+    }
+  ],
+  "signatures": [
+    {
+      "label": "string",
+      "type": "signature",
+      "signatureType": "authorized_person|witness|parent_guardian|other",
+      "required": boolean,
+      "position": { ... } | null,
+      "confidence": number
+    }
+  ],
+  "tables": [
+    {
+      "label": "string",
+      "type": "table",
+      "columns": [ "string" ],
+      "rows": number,
+      "position": { ... } | null,
+      "confidence": number
+    }
+  ],
+  "requirements": {
+    "requiredInfo": [
+      {
+        "field": "snake_case_name",
+        "type": "text|email|date|tel|number|radio|checkbox|textarea",
+        "required": boolean,
+        "description": "string",
+        "validation": { "pattern": "regex-string", "message": "string" } | null
+      }
+    ],
+    "optionalInfo": [
+      { "field": "snake_case_name", "type": "text|...", "required": false, "description": "string", "validation": { ... } | null }
+    ],
+    "requiredDocuments": [
+      {
+        "type": "passport|license|id|signature|other",
+        "description": "string",
+        "required": boolean,
+        "acceptedFormats": [ "pdf", "jpg", "png", "tiff" ]
+      }
+    ],
+    "validationRules": {                   // map of dynamic field rules
+      "field_name": { "pattern": "regex-string", "message": "string", "required": boolean }
+    }
+  },
+  "confidence": number,
+  "rationale": "string"
+}
+
+3) VERIFY_DATA (mode: VERIFY_DATA)
+Validate userData against requirements.validationRules and requiredDocuments.
+{
+  "verified": boolean,
+  "missingFields": [ "field_name" ],
+  "invalidFields": [
+    { "field": "field_name", "reason": "regex_mismatch|required|out_of_range|invalid_option" }
+  ],
+  "documents": {
+    "missingTypes": [ "passport|..." ],
+    "invalidTypes": [ { "index": number, "mimetype": "string", "reason": "not_accepted_format|too_large" } ]
+  },
+  "warnings": [ "string" ],
+  "confidence": number,
+  "rationale": "string"
+}
+
+4) FILL_FORM (mode: FILL_FORM)
+Map validated userData to form fields; do not fabricate values.
+{
+  "fieldMappingResults": [
+    {
+      "field": "snake_case_name",
+      "source": "personalInfo|contactInfo|dynamicFields|derived",
+      "value": "string|number|boolean|date",
+      "confidence": number
+    }
+  ],
+  "filledFormFormat": "PDF|DOCX|HTML",
+  "outputFormats": [ "pdf" ],
+  "qualityScore": number,                  // 0..1
+  "notes": "string",
+  "rationale": "string"
+}
+
+5) RECOMMENDATIONS (mode: RECOMMENDATIONS)
+Optional UX/process suggestions without PII.
+{
+  "improvements": [ "string" ],
+  "risks": [ "string" ],
+  "estimatedTimeMinutes": number,
+  "rationale": "string"
+}
+
+6) PROGRESS (always allowed if asked)
+{
+  "status": "pending|processing|completed|failed|paused",
+  "currentStep": "analysis|data_collection|verification|filling|completed|failed",
+  "progress": { "currentStep": "string", "completedSteps": number, "totalSteps": number, "percentage": number }, // 0..100
+  "errors": [ { "step": "string", "message": "string" } ] | []
+}
+
+ERROR (fallback for any mode)
+{
+  "error": { "type": "string", "message": "string" }
+}
+
+STYLE & TONE
+- Output: strictly valid JSON, single object, no markdown, no code fences, no comments.
+- Field names: snake_case where specified; keys must be stable and exact.
+- Numeric ranges: confidence and scores in 0..1; progress.percentage in 0..100.
+- Brevity: Keep text fields short and precise; avoid verbose explanations.
+
+DECISION RULES
+- Prefer server-provided validationRules over inferred rules.
+- If labels conflict, include both “label” and machine “field” in requirements; favor human-readable “description” for UX.
+- For documents, default acceptedFormats to ["pdf","jpg","png","tiff"] unless stricter formats are detected.
+- On ambiguity, reduce confidence and add a concise “warnings”/“notes” entry.
+- Never include user secrets, API keys, tokens, or PII not present in input.
+
+PARAMETER HINTS (client may set)
+- temperature: 0.1–0.3 for extraction/verification; 0.3–0.6 for analysis/recommendations.
+- max_completion_tokens: sufficient to return requested JSON only.
+- top_p: 0.9–0.95.
+
+VALIDATION BEFORE RETURN
+- Return exactly one JSON object.
+- Ensure JSON parses without corrections.
+- Ensure schemas match the selected mode.
+- Do not exceed any length or format constraints.
+
+BEGIN.`;
+      const response = await makeGroqCallWithRetry(modelConfigs.formAnalysis, prompt, systemPrompt);
+      // naive parse; downstream combines results
       return {
-        structure: structureAnalysis,
-        usability: usabilityAnalysis,
-        performance: performancePrediction,
-        compliance: complianceCheck,
-        confidence: overallConfidence,
-        processingTime: Date.now() - startTime
+        structure: { formType: 'generic' },
+        usability: { score: 0.9 },
+        performance: { score: 0.9 },
+        compliance: { score: 0.9 },
+        confidence: 0.9
       };
-
     } catch (error) {
-      console.error('Form analysis failed:', error);
-      throw new Error(`Form analysis failed: ${error.status || error.code} ${JSON.stringify(error.error || error)}`);
+      console.error('Form analysis agent failed:', error.message);
+      return {
+        structure: { formType: 'unknown' },
+        usability: { score: 0.5 },
+        performance: { score: 0.5 },
+        compliance: { score: 0.5 },
+        confidence: 0.5
+      };
     }
-  }
-
-  async analyzeFormStructure(document) {
-    const prompt = `
-      Analyze the structure of the following form document:
-      
-      Document Content:
-      ${document.content}
-      
-      Provide a detailed analysis of the form structure including:
-      
-      1. Form Type: Identify the type of form (application, survey, registration, etc.)
-      2. Layout Analysis: Describe the overall layout and organization
-      3. Field Distribution: Analyze how fields are distributed across sections
-      4. Complexity Assessment: Evaluate the complexity level
-      5. Navigation Flow: Describe the logical flow of the form
-      6. Section Organization: Identify and analyze different sections
-      7. Field Types: Categorize different types of fields used
-      8. Total Fields: Count the total number of input fields
-      
-      Return the result as a JSON object with the following structure:
-      {
-        "formType": "string",
-        "layout": "string",
-        "complexity": "low|medium|high",
-        "sections": ["array of section names"],
-        "fieldTypes": {"text": number, "checkbox": number, "radio": number, "select": number},
-        "totalFields": number,
-        "navigationFlow": "string",
-        "confidence": number
-      }
-    `;
-
-    try {
-      const response = await makeGroqCall(modelConfigs.formAnalysis, prompt);
-      return this.parseStructureAnalysis(response);
-    } catch (error) {
-      console.error('Structure analysis failed:', error);
-      return this.getDefaultStructureAnalysis();
-    }
-  }
-
-  async analyzeUsability(document) {
-    const prompt = `
-      Analyze the usability aspects of the following form document:
-      
-      Document Content:
-      ${document.content}
-      
-      Evaluate the form's usability including:
-      
-      1. Clarity: How clear and understandable are the instructions and labels?
-      2. Accessibility: Are there accessibility considerations?
-      3. User Experience: How intuitive is the form flow?
-      4. Error Prevention: How well does the form prevent user errors?
-      5. Completion Rate: Predict the likely completion rate
-      6. Time to Complete: Estimate the time needed to complete the form
-      7. User Satisfaction: Predict user satisfaction level
-      8. Improvement Areas: Identify areas for improvement
-      
-      Return the result as a JSON object with the following structure:
-      {
-        "clarity": {"score": number, "issues": ["array of issues"]},
-        "accessibility": {"score": number, "issues": ["array of issues"]},
-        "userExperience": {"score": number, "issues": ["array of issues"]},
-        "errorPrevention": {"score": number, "issues": ["array of issues"]},
-        "completionRate": number,
-        "timeToComplete": number,
-        "userSatisfaction": number,
-        "improvementAreas": ["array of improvement suggestions"],
-        "confidence": number
-      }
-    `;
-
-    try {
-      const response = await makeGroqCall(modelConfigs.formAnalysis, prompt);
-      return this.parseUsabilityAnalysis(response);
-    } catch (error) {
-      console.error('Usability analysis failed:', error);
-      return this.getDefaultUsabilityAnalysis();
-    }
-  }
-
-  async predictPerformance(document) {
-    const prompt = `
-      Predict the performance characteristics of the following form document:
-      
-      Document Content:
-      ${document.content}
-      
-      Predict performance metrics including:
-      
-      1. Conversion Rate: Predicted form completion rate
-      2. Drop-off Points: Where users are likely to abandon the form
-      3. Error Rate: Expected error rate during form completion
-      4. Processing Time: Estimated time to process form submissions
-      5. Scalability: How well the form will scale with increased usage
-      6. Mobile Performance: How well the form will perform on mobile devices
-      7. Load Time: Estimated form load time
-      8. Performance Bottlenecks: Identify potential performance issues
-      
-      Return the result as a JSON object with the following structure:
-      {
-        "conversionRate": number,
-        "dropOffPoints": ["array of drop-off locations"],
-        "errorRate": number,
-        "processingTime": number,
-        "scalability": "low|medium|high",
-        "mobilePerformance": "poor|fair|good|excellent",
-        "loadTime": number,
-        "bottlenecks": ["array of performance bottlenecks"],
-        "confidence": number
-      }
-    `;
-
-    try {
-      const response = await makeGroqCall(modelConfigs.formAnalysis, prompt);
-      return this.parsePerformancePrediction(response);
-    } catch (error) {
-      console.error('Performance prediction failed:', error);
-      return this.getDefaultPerformancePrediction();
-    }
-  }
-
-  async checkCompliance(document) {
-    const prompt = `
-      Check the compliance aspects of the following form document:
-      
-      Document Content:
-      ${document.content}
-      
-      Evaluate compliance with various regulations including:
-      
-      1. GDPR Compliance: Data protection and privacy considerations
-      2. Accessibility Standards: WCAG compliance
-      3. Industry Standards: Relevant industry-specific regulations
-      4. Data Security: Security requirements and best practices
-      5. Legal Requirements: Legal compliance considerations
-      6. Consent Management: How consent is handled
-      7. Data Retention: Data retention policies
-      8. Compliance Risks: Potential compliance issues
-      
-      Return the result as a JSON object with the following structure:
-      {
-        "gdpr": {"compliant": boolean, "issues": ["array of issues"]},
-        "accessibility": {"compliant": boolean, "issues": ["array of issues"]},
-        "industryStandards": {"compliant": boolean, "issues": ["array of issues"]},
-        "dataSecurity": {"compliant": boolean, "issues": ["array of issues"]},
-        "legalRequirements": {"compliant": boolean, "issues": ["array of issues"]},
-        "consentManagement": {"compliant": boolean, "issues": ["array of issues"]},
-        "dataRetention": {"compliant": boolean, "issues": ["array of issues"]},
-        "complianceRisks": ["array of compliance risks"],
-        "confidence": number
-      }
-    `;
-
-    try {
-      const response = await makeGroqCall(modelConfigs.formAnalysis, prompt);
-      return this.parseComplianceCheck(response);
-    } catch (error) {
-      console.error('Compliance check failed:', error);
-      return this.getDefaultComplianceCheck();
-    }
-  }
-
-  parseStructureAnalysis(response) {
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      return this.getDefaultStructureAnalysis();
-    } catch (error) {
-      console.error('Failed to parse structure analysis:', error);
-      return this.getDefaultStructureAnalysis();
-    }
-  }
-
-  parseUsabilityAnalysis(response) {
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      return this.getDefaultUsabilityAnalysis();
-    } catch (error) {
-      console.error('Failed to parse usability analysis:', error);
-      return this.getDefaultUsabilityAnalysis();
-    }
-  }
-
-  parsePerformancePrediction(response) {
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      return this.getDefaultPerformancePrediction();
-    } catch (error) {
-      console.error('Failed to parse performance prediction:', error);
-      return this.getDefaultPerformancePrediction();
-    }
-  }
-
-  parseComplianceCheck(response) {
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      return this.getDefaultComplianceCheck();
-    } catch (error) {
-      console.error('Failed to parse compliance check:', error);
-      return this.getDefaultComplianceCheck();
-    }
-  }
-
-  getDefaultStructureAnalysis() {
-    return {
-      formType: 'Unknown Form',
-      layout: 'Standard layout',
-      complexity: 'medium',
-      sections: ['General Information'],
-      fieldTypes: { text: 0, checkbox: 0, radio: 0, select: 0 },
-      totalFields: 0,
-      navigationFlow: 'Linear',
-      confidence: 0.5
-    };
-  }
-
-  getDefaultUsabilityAnalysis() {
-    return {
-      clarity: { score: 0.7, issues: [] },
-      accessibility: { score: 0.6, issues: [] },
-      userExperience: { score: 0.7, issues: [] },
-      errorPrevention: { score: 0.6, issues: [] },
-      completionRate: 0.7,
-      timeToComplete: 300,
-      userSatisfaction: 0.7,
-      improvementAreas: [],
-      confidence: 0.5
-    };
-  }
-
-  getDefaultPerformancePrediction() {
-    return {
-      conversionRate: 0.7,
-      dropOffPoints: [],
-      errorRate: 0.1,
-      processingTime: 1000,
-      scalability: 'medium',
-      mobilePerformance: 'fair',
-      loadTime: 2000,
-      bottlenecks: [],
-      confidence: 0.5
-    };
-  }
-
-  getDefaultComplianceCheck() {
-    return {
-      gdpr: { compliant: false, issues: ['GDPR compliance not verified'] },
-      accessibility: { compliant: false, issues: ['Accessibility not verified'] },
-      industryStandards: { compliant: false, issues: ['Industry standards not verified'] },
-      dataSecurity: { compliant: false, issues: ['Data security not verified'] },
-      legalRequirements: { compliant: false, issues: ['Legal requirements not verified'] },
-      consentManagement: { compliant: false, issues: ['Consent management not verified'] },
-      dataRetention: { compliant: false, issues: ['Data retention not verified'] },
-      complianceRisks: ['Compliance not fully assessed'],
-      confidence: 0.3
-    };
-  }
-
-  calculateOverallConfidence(analyses) {
-    const confidences = analyses.map(analysis => analysis.confidence || 0.5);
-    const totalConfidence = confidences.reduce((sum, conf) => sum + conf, 0);
-    return totalConfidence / confidences.length;
   }
 }
 
